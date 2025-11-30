@@ -34,10 +34,11 @@ import io
 import csv
 import os
 import uuid
+
+
 # =========================
 # DB 설정 (SQLite 파일: attendance.db)
-# =========================uvicorn main:app --host 0.0.0.0 --port 8000
-
+# =========================
 SQLALCHEMY_DATABASE_URL = "sqlite:///./attendance.db"
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
@@ -48,6 +49,10 @@ Base = declarative_base()
 # 도면 파일 저장 폴더
 UPLOAD_DIR = "uploads/drawings"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# ✅ 하자 신고 사진 저장 폴더
+ISSUE_UPLOAD_DIR = "uploads/issues"
+os.makedirs(ISSUE_UPLOAD_DIR, exist_ok=True)
 
 
 # =========================
@@ -160,6 +165,9 @@ class IssueReportTable(Base):
     status = Column(String, default="등록됨")        # 등록됨 / 처리 중 / 완료
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # ✅ 첨부 이미지 정보
+    image_path = Column(String, nullable=True)
+    image_original_name = Column(String, nullable=True)
 
     user = relationship("UserTable")
 
@@ -361,7 +369,7 @@ class IssueRead(IssueBase):
     status: str
     created_at: datetime
     updated_at: datetime
-
+    image_url: Optional[str] = None
 
 # ---------- 도면 Pydantic ----------
 class DrawingBase(BaseModel):
@@ -604,6 +612,11 @@ def emergency_row_to_schema(row: EmergencyAlertTable) -> EmergencyAlertRead:
 
 
 def issue_row_to_schema(row: IssueReportTable) -> IssueRead:
+    image_url = None
+    if row.image_path:
+        # 프론트에서 BASE_URL + image_url 로 접근
+        image_url = f"/issues/{row.id}/file"
+
     return IssueRead(
         id=row.id,
         title=row.title,
@@ -614,7 +627,9 @@ def issue_row_to_schema(row: IssueReportTable) -> IssueRead:
         status=row.status,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        image_url=image_url,
     )
+
 
 
 def drawing_row_to_schema(row: DrawingTable) -> DrawingRead:
@@ -1142,41 +1157,72 @@ async def export_attendance_csv(
 
     rows = query.order_by(AttendanceTable.date, UserTable.username).all()
 
-    output = io.StringIO()
+    # 🔹 줄바꿈 문제 방지를 위해 newline="" 사용
+    output = io.StringIO(newline="")
     writer = csv.writer(output)
 
+    # 🔹 줄바꿈 문제 방지를 위해 newline="" 사용
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+
+    # ✅ 한글 컬럼명으로 변경
     writer.writerow(
         [
-            "id",
-            "username",
-            "full_name",
-            "role",
-            "date",
-            "check_in_time",
-            "check_in_status",
-            "check_out_time",
-            "check_out_status",
+            "출석ID",
+            "아이디",
+            "이름",
+            "역할",
+            "날짜",
+            "출근시간",
+            "출근상태",
+            "퇴근시간",
+            "퇴근상태",
         ]
     )
 
     for r in rows:
+        # 역할 한글화
+        if r.user.role == "manager":
+            role_kr = "관리자"
+        else:
+            role_kr = "근로자"
+
+        # 날짜/시간 보기 좋게 포맷
+        date_str = r.date.strftime("%Y-%m-%d") if r.date else ""
+        time_fmt = "%Y-%m-%d %H:%M"
+
+        check_in_str = (
+            r.check_in_time.strftime(time_fmt) if r.check_in_time else ""
+        )
+        check_out_str = (
+            r.check_out_time.strftime(time_fmt) if r.check_out_time else ""
+        )
+
         writer.writerow(
             [
                 r.id,
                 r.user.username,
                 r.user.full_name or "",
-                r.user.role,
-                r.date.isoformat() if r.date else "",
-                r.check_in_time.isoformat() if r.check_in_time else "",
+                role_kr,
+                date_str,
+                check_in_str,
                 r.check_in_status or "",
-                r.check_out_time.isoformat() if r.check_out_time else "",
+                check_out_str,
                 r.check_out_status or "",
             ]
         )
 
+    # 🔹 UTF-8 BOM(utf-8-sig)으로 인코딩해서 한글 깨짐 방지
     output.seek(0)
-    headers = {"Content-Disposition": 'attachment; filename="attendance.csv"'}
-    return StreamingResponse(output, media_type="text/csv", headers=headers)
+    csv_bytes = output.getvalue().encode("utf-8-sig")
+
+    response = StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv; charset=utf-8",
+    )
+    # 🔹 파일 이름도 UTF-8 규격으로 지정
+    response.headers["Content-Disposition"] = "attachment; filename*=UTF-8''attendance.csv"
+    return response
 
 
 # =========================
@@ -1424,29 +1470,74 @@ async def resolve_emergency_alert(
     response_model=IssueRead,
     tags=["작업자 기능"],
 )
+
 async def create_issue(
-    issue: IssueCreate,
+    title: str = Form(...),
+    description: str = Form(...),
+    issue_type: Optional[str] = Form(None),
+    photo: Optional[UploadFile] = File(None),
     current_user: UserInDB = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
     ▶ 하자/문제 신고 등록 (작업자/관리자 공용)
-
-    - title: 문제 제목 (예: "벽체 균열 발생")
+    - title: 문제 제목
     - description: 상세 내용
     - issue_type: 안전/품질/공정/기타 등 분류
+    - photo: 현장 사진 (선택)
     """
+    image_path = None
+    image_original_name = None
+
+    if photo is not None:
+        _, ext = os.path.splitext(photo.filename)
+        unique_name = f"{uuid.uuid4().hex}{ext}"
+        save_path = os.path.join(ISSUE_UPLOAD_DIR, unique_name)
+
+        file_bytes = await photo.read()
+        with open(save_path, "wb") as f:
+            f.write(file_bytes)
+
+        image_path = save_path
+        image_original_name = photo.filename
+
     row = IssueReportTable(
         user_id=current_user.id,
-        title=issue.title,
-        description=issue.description,
-        issue_type=issue.issue_type,
+        title=title,
+        description=description,
+        issue_type=issue_type,
         status="등록됨",
+        image_path=image_path,
+        image_original_name=image_original_name,
     )
     db.add(row)
     db.commit()
     db.refresh(row)
     return issue_row_to_schema(row)
+
+@app.get(
+    "/issues/{issue_id}/file",
+    tags=["작업자 기능"],
+)
+async def get_issue_file(
+    issue_id: int,
+    current_user: UserInDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    ▶ 하자 신고에 첨부된 사진 파일 다운로드
+    """
+    row = db.query(IssueReportTable).filter(IssueReportTable.id == issue_id).first()
+    if not row or row.user.site_id != current_user.site_id:
+        raise HTTPException(status_code=404, detail="하자/문제 신고를 찾을 수 없습니다.")
+
+    if not row.image_path or not os.path.exists(row.image_path):
+        raise HTTPException(status_code=404, detail="첨부된 파일이 없습니다.")
+
+    return FileResponse(
+        row.image_path,
+        filename=row.image_original_name or "issue_file",
+    )
 
 
 @app.get(
