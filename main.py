@@ -2,6 +2,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, date, time, timedelta
 from enum import Enum
 from typing import Optional, List
+from fastapi import Response
 
 from fastapi import (
     FastAPI,
@@ -1531,8 +1532,9 @@ async def get_issue_file(
     if not row or row.user.site_id != current_user.site_id:
         raise HTTPException(status_code=404, detail="하자/문제 신고를 찾을 수 없습니다.")
 
+    # 파일이 없으면 404 말고 204(내용 없음) 반환!
     if not row.image_path or not os.path.exists(row.image_path):
-        raise HTTPException(status_code=404, detail="첨부된 파일이 없습니다.")
+        return Response(status_code=204)
 
     return FileResponse(
         row.image_path,
