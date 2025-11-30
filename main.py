@@ -615,16 +615,19 @@ def emergency_row_to_schema(row: EmergencyAlertTable) -> EmergencyAlertRead:
 def issue_row_to_schema(row: IssueReportTable) -> IssueRead:
     image_url = None
     if row.image_path:
-        # 프론트에서 BASE_URL + image_url 로 접근
         image_url = f"/issues/{row.id}/file"
+
+    # row.user 가 None 일 수 있기 때문에 안전하게 처리
+    username = row.user.username if row.user else "알 수 없음"
+    full_name = row.user.full_name if row.user else None
 
     return IssueRead(
         id=row.id,
         title=row.title,
         description=row.description,
         issue_type=row.issue_type,
-        username=row.user.username,
-        full_name=row.user.full_name,
+        username=username,
+        full_name=full_name,
         status=row.status,
         created_at=row.created_at,
         updated_at=row.updated_at,
