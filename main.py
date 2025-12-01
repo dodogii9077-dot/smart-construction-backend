@@ -211,7 +211,6 @@ class ProcessTaskTable(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-
     created_by = relationship("UserTable")
 
 
