@@ -1,4 +1,5 @@
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, date, time, timedelta
 from enum import Enum
 from typing import Optional, List
@@ -445,6 +446,16 @@ app = FastAPI(
         },
     ],
 )
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 테스트 단계에서는 모두 허용
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 # CORS 설정 (프론트엔드에서 호출 가능하게)
@@ -1717,6 +1728,21 @@ async def upload_drawing(
 
     return drawing_row_to_schema(row)
 
+@app.get("/drawings/file/{file_id}")
+async def download_drawing(file_id: int, db: Session = Depends(get_db), current_user: UserInDB = Depends(get_current_user)):
+    file = db.query(DrawingTable).filter(DrawingTable.id == file_id).first()
+
+    if not file or file.site_id != current_user.site_id:
+        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+
+    if not os.path.exists(file.file_path):
+        raise HTTPException(status_code=404, detail="저장된 파일이 존재하지 않습니다.")
+
+    return FileResponse(
+        file.file_path,
+        filename=file.original_name,
+        media_type="application/octet-stream"
+    )
 
 @app.get(
     "/drawings",
