@@ -4,6 +4,10 @@ from datetime import datetime, date, time, timedelta
 from enum import Enum
 from typing import Optional, List
 from fastapi import Response
+from pydantic import BaseModel
+import sqlite3
+
+
 
 from fastapi import (
     FastAPI,
@@ -1951,12 +1955,29 @@ async def get_process(
     response_model=ProcessRead,
     tags=["작업자 기능"],
 )
-async def update_process(
-    process_id: int,
-    process_update: ProcessUpdate,
-    current_user: UserInDB = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+
+
+class ProcessUpdate(BaseModel):
+    status: str
+
+@app.patch("/processes/{proc_id}")
+def update_process(proc_id: int, data: ProcessUpdate):
+    conn = sqlite3.connect("attendance.db")
+    cur = conn.cursor()
+
+    cur.execute("""
+        UPDATE processes
+        SET status = ?
+        WHERE id = ?
+    """, (data.status, proc_id))
+
+    conn.commit()
+
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Process not found")
+
+    return {"message": "updated", "id": proc_id, "new_status": data.status}
+
     """
     ▶ 공정 수정 (작업자/관리자 공용)
 
